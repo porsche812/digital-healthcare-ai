@@ -12,15 +12,41 @@
 - Gradio
 - LangChain & OpenAI API
 
-## 로컬 실행 방법 (Mac 환경 기준)
+## 🏗️ 프로젝트 아키텍처 (Directory Structure)
 
-### 1. 가상환경 세팅 및 패키지 설치
-터미널을 열고 아래 명령어를 순서대로 실행합니다.
+본 프로젝트는 **관심사의 분리(Separation of Concerns)** 원칙을 바탕으로, 향후 RAG 고도화 및 시스템 확장에 유연하게 대응할 수 있도록 계층형 아키텍처로 설계되었습니다.
 
-```bash
-# 가상환경 생성 및 활성화
+```text
+healthcare_chatbot/
+├── .venv/                  # 가상환경
+├── .env                    # 환경변수 및 시크릿 키 (API Key 등) 보관
+├── requirements.txt        # 프로젝트 의존성 패키지 목록
+├── README.md               # 프로젝트 개요 및 가이드
+│
+├── app.py                  # 🚀 최상위 실행 진입점 (Entry Point)
+│
+├── config/                 # ⚙️ 설정 관리 계층
+│   └── settings.py         # 전역 설정값 및 환경변수 로드
+│
+├── data/                   # 💾 데이터 접근 계층 (Repository Layer)
+│   └── faq_repository.py   # FAQ 데이터 로드 및 관리 (DB 접근 분리)
+│
+├── core/                   # 🧠 AI 코어 및 유틸리티 계층
+│   ├── retriever.py        # 데이터 검색 로직 (키워드 매칭 / Vector DB 연동 등)
+│   ├── prompts.py          # AI 프롬프트 템플릿 통합 관리
+│   └── llm_builder.py      # LLM 객체 생성 및 LangChain 파이프라인 조립
+│
+├── service/                # 🛠️ 비즈니스 로직 계층 (Service Layer)
+│   └── chat_service.py     # 가드레일(입력 검증), 정보 검색, AI 답변 생성 흐름 오케스트레이션
+│
+└── ui/                     # 🖥️ 프레젠테이션 계층 (View Layer)
+    └── gradio_app.py       # 사용자 인터페이스(Gradio) 화면 구성 및 이벤트 바인딩
+
+
+## 가상환경 세팅 및 패키지 설치
+1. 가상환경 생성 및 활성화
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 필수 패키지 설치
+2. 필수 패키지 설치
 pip install -r requirements.txt

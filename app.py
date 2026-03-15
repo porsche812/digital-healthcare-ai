@@ -1,11 +1,13 @@
-import time
-import gradio as gr
-import os
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
+from ui.gradio_app import HealthcareChatbotApp
 
-# .env 파일 로드
-load_dotenv()
+if __name__ == "__main__":
 
-# llm 객체 생성
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    # 1. UI 앱 인스턴스 생성
+    app = HealthcareChatbotApp()
+
+    # 2. UI 레이아웃 구성
+    demo = app.create_ui()
+
+    # 3. 서버 실행 (공개 링크를 원하시면 share=True 추가)
+    demo.launch()
+
