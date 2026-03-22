@@ -10,3 +10,6 @@ __pycache__/
 
 # Mac OS 시스템 파일 (찌꺼기)
 .DS_Store
+
+# Vector DB Index
+faq_faiss_index/

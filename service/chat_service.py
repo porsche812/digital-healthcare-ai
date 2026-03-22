@@ -77,34 +77,34 @@ class ChatService:
             # ---------------------------------------------------------
             # 3. 데이터 검색 (RAG - Retriever)
             # ---------------------------------------------------------
-            # 사용자의 질문(validated_q)과 가장 유사한 FAQ 데이터를 저장소에서 2개(top_k) 찾아옵니다.
+            # 변경됨: matched_docs는 이제 LangChain Document 객체의 리스트입니다.
             matched_docs = self.retriever.search(validated_q, top_k=2)
 
-            # 만약 DB(또는 리스트)에 관련 있는 내용이 전혀 없다면, 
-            # 엉뚱한 대답을 방지하기 위해 정해둔 "검색 결과 없음" 메시지를 바로 반환합니다.
             if not matched_docs:
                 return settings.ERROR_MESSAGE_NO_MATCH
             
             # ---------------------------------------------------------
-            # 4. 프롬프트 문맥(Context) 조립
+            # 4. 프롬프트 문맥(Context) 조립 및 출처 추출
             # ---------------------------------------------------------
-            # 검색해 온 딕셔너리 리스트를 AI가 읽기 편하게 하나의 긴 문자열(String)로 합칩니다.
-            # \n (줄바꿈)을 기준으로 질문과 답변을 이어 붙입니다.
-            context_text = "\n".join([f"사용자: {d['question']}\nAI 챗봇: {d['answer']}" for d in matched_docs])
+            # Document 객체의 page_content를 연결하여 컨텍스트 생성
+            context_text = "\n\n".join([doc.page_content for doc in matched_docs])
+            
+            # Document 객체의 metadata에서 출처 정보 추출 (노트북 사이클 7 응용)
+            sources = [f"[{doc.metadata['category']}] {doc.metadata['id']}" for doc in matched_docs]
 
             # ---------------------------------------------------------
             # 5. LLM 체인 실행 및 답변 생성 (Invoke)
             # ---------------------------------------------------------
-            # 미리 만들어둔 LangChain(faq_chain)에 준비된 재료들을 맵(Map/Dict) 형태로 주입합니다.
-            # 이 재료들은 prompts.py에 있는 대본(Template)의 {변수명} 자리에 쏙쏙 들어갑니다.
             response = self.faq_chain.invoke({
-                "context": context_text,   # 검색해 온 FAQ 참고 자료
-                "question": validated_q,   # 사용자의 현재 질문
-                "history": chat_history    # 방금 위에서 변환한 과거 대화 기록 (이걸로 문맥 유지!)
+                "context": context_text,   
+                "question": validated_q,   
+                "history": chat_history    
             })
 
-            # 모델이 생성하고 파서(StrOutputParser)가 문자열로 예쁘게 다듬은 최종 답변을 반환합니다.
-            return response
+            # 최종 답변에 마크다운 형태로 출처를 덧붙여 반환 (노트북 사이클 9 참고)
+            source_text = "\n\n**[참고 문서]**\n" + "\n".join([f"- {s}" for s in sources])
+            
+            return response + source_text
         
         # ---------------------------------------------------------
         # 6. 예외 처리 (Exception Handling)
