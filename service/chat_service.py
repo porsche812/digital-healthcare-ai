@@ -1,117 +1,125 @@
-from data.faq_repository import get_all_faqs  # FAQ 데이터를 가져오는 저장소 함수 임포트
-from core.retriever import FAQRetriever  # 검색 로직 클래스 임포트
-from core.llm_builder import get_faq_chain, get_category_chain  # LLM 체인 생성 함수들 임포트
-from config import settings  # 전역 설정값 임포트
+from data.faq_repository import get_all_faqs  
+from core.retriever import FAQRetriever  
+from core.llm_builder import get_faq_chain, get_llm
+from config import settings  
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser # StrOutputParser 추가
+from core.prompts import INTENT_CLASSIFIER_PROMPT, REWRITE_PROMPT # REWRITE_PROMPT 추가
 
 class ChatService:
     """
-    사용자 질문 처리하는 핵심 비즈니스 로직임.
-    검증 -> 분류 -> 검색 -> 답변 생성 순으로 돌아감.
+    사용자 질문을 처리하는 핵심 비즈니스 로직.
+    검증 -> 기록 변환 -> 의도 분류 -> 질문 재작성 -> 검색 -> 답변 생성 순으로 동작합니다.
     """
     def __init__(self):
-        # [설계 의도] 객체 생성할 때 필요한 부품들 미리 세팅해둠. 
-        # 매번 로드하면 성능 떨어지니까 처음에 한 번만 딱 불러오는 게 효율적임.
         self.faqs = get_all_faqs() 
         self.retriever = FAQRetriever(self.faqs)  
         self.faq_chain = get_faq_chain()
-        self.category_chain = get_category_chain()
+        self.intent_chain = INTENT_CLASSIFIER_PROMPT | get_llm() | JsonOutputParser()
+        
+        # [핵심] 질문 재작성 전용 체인 추가
+        self.rewrite_chain = REWRITE_PROMPT | get_llm() | StrOutputParser()
 
     def _validate_input(self, question: str):
-        """입력값 가드레일 (검증 로직)임"""
-        q = question.strip()  # 앞뒤 공백부터 지우기
+        """사용자 입력값 가드레일"""
+        q = question.strip()
 
         if not q:
-            return False, settings.ERROR_MESSAGE_INPUT  # 빈 질문 반려
+            return False, settings.ERROR_MESSAGE_INPUT  
         if len(q) > 500:
-            return False, settings.ERROR_MESSAGE_INPUT_TOO_LONG  # 토큰 낭비 방지
+            return False, settings.ERROR_MESSAGE_INPUT_TOO_LONG  
         if q.replace(" ", "").isdigit():
-            return False, settings.ERROR_MESSAGE_INPUT  # 숫자만 반려
+            return False, settings.ERROR_MESSAGE_INPUT  
         return True, q
     
-    def get_response(self, message, history):
-        """
-        사용자의 질문을 받아 검증, 검색(RAG), 답변 생성의 전체 사이클을 실행하는 메인 함수
-        (Java의 Service/Controller 통합 레이어 역할)
-        
-        :param message: 사용자가 방금 입력창에 친 질문 (String)
-        :param history: Gradio가 전달해주는 이전 대화 기록 (List)
-        """
-        
-        # ---------------------------------------------------------
-        # 1. 입력값 검증 (Validation)
-        # ---------------------------------------------------------
-        # _validate_input 함수를 통해 빈 문자열, 너무 긴 글, 숫자만 있는 글 등을 걸러냅니다.
-        # is_valid: 통과 여부 (True/False)
-        # validated_q: 양 끝 공백 등이 제거된 깔끔한 문자열 (또는 에러 메시지)
+    def get_response(self, message: str, history: list):
         is_valid, validated_q = self._validate_input(message)
-
-        # 검증을 통과하지 못했다면(False), AI 모델까지 갈 필요 없이 바로 에러 메시지를 화면에 반환합니다.
         if not is_valid: 
             return validated_q 
 
         try:
             # ---------------------------------------------------------
-            # 2. 대화 기록 변환 (Gradio DTO -> LangChain Entity)
+            # Step 1. 대화 기록 변환 (Gradio -> LangChain)
             # ---------------------------------------------------------
-            # Gradio가 주는 대화 기록 포맷을 LangChain 모델이 이해할 수 있는 Message 객체로 번역합니다.
             chat_history = []
-            
             for msg in history:
-                # 케이스 A: 최신 Gradio 버전 (딕셔너리 형태 JSON 데이터로 들어올 때)
-                # 예: {"role": "user", "content": "안녕하세요"}
                 if isinstance(msg, dict):
                     if msg.get("role") == "user":
-                        # 사용자의 말은 HumanMessage 객체로 감싸서 리스트에 추가
                         chat_history.append(HumanMessage(content=msg.get("content", "")))
                     elif msg.get("role") == "assistant":
-                        # 챗봇의 말은 AIMessage 객체로 감싸서 리스트에 추가
                         chat_history.append(AIMessage(content=msg.get("content", "")))
-                
-                # 케이스 B: 구버전 Gradio (리스트나 튜플 형태로 들어올 때)
-                # 예: ["안녕하세요", "네, 무엇을 도와드릴까요?"]
                 elif isinstance(msg, (list, tuple)) and len(msg) == 2:
-                    chat_history.append(HumanMessage(content=msg[0])) # 첫 번째는 사용자
-                    chat_history.append(AIMessage(content=msg[1]))    # 두 번째는 챗봇
+                    chat_history.append(HumanMessage(content=msg[0])) 
+                    chat_history.append(AIMessage(content=msg[1]))    
 
             # ---------------------------------------------------------
-            # 3. 데이터 검색 (RAG - Retriever)
+            # Step 2. 의도 분류 (Intent Classification)
             # ---------------------------------------------------------
-            # 변경됨: matched_docs는 이제 LangChain Document 객체의 리스트입니다.
-            matched_docs = self.retriever.search(validated_q, top_k=2)
+            try:
+                intent_res = self.intent_chain.invoke({
+                    "message": validated_q, 
+                    "history": chat_history
+                })
+                intent = intent_res.get("intent", "chitchat")
+            except Exception:
+                intent = "question"
 
-            if not matched_docs:
+            if intent == "greeting":
+                return "안녕하세요! 디지털 헬스케어 AI 상담원입니다. 건강 관리나 앱 사용에 대해 무엇을 도와드릴까요?"
+            elif intent == "complaint":
+                return "이용에 불편을 드려 대단히 죄송합니다. 해당 문제는 신속하게 기술팀에 전달하여 조치하겠습니다."
+            elif intent == "chitchat":
+                return "ㅎㅎ 편하게 말씀해 주셔서 감사합니다. 헬스케어 관련 궁금증이 생기면 언제든 물어보세요!"
+
+            # ---------------------------------------------------------
+            # Step 3. 질문 재작성 (Query Rewriting)
+            # ---------------------------------------------------------
+            search_query = validated_q
+            if chat_history:
+                # 과거 대화가 있을 때만 재작성 로직을 태웁니다. (메모리 절약을 위해 최근 4개 메시지만 전달)
+                search_query = self.rewrite_chain.invoke({
+                    "history": chat_history[-4:], 
+                    "question": validated_q
+                })
+                # 터미널에서 어떻게 질문이 변환되었는지 디버깅할 수 있습니다.
+                print(f"🔄 [질문 재작성] 원본: '{validated_q}' -> 검색용: '{search_query}'") 
+
+            # ---------------------------------------------------------
+            # Step 4. 임계값(Threshold) 기반 검색
+            # ---------------------------------------------------------
+            # 💡 주의: 여기서 검색은 원본(validated_q)이 아닌 재작성된 질문(search_query)으로 합니다.
+            # ---------------------------------------------------------
+            # Step 4. 임계값(Threshold) 기반 검색
+            # ---------------------------------------------------------
+            docs_and_scores = self.retriever.vectorstore.similarity_search_with_score(search_query, k=2)
+
+            if not docs_and_scores:
                 return settings.ERROR_MESSAGE_NO_MATCH
             
-            # ---------------------------------------------------------
-            # 4. 프롬프트 문맥(Context) 조립 및 출처 추출
-            # ---------------------------------------------------------
-            # Document 객체의 page_content를 연결하여 컨텍스트 생성
-            context_text = "\n\n".join([doc.page_content for doc in matched_docs])
+            best_doc, best_score = docs_and_scores[0]
             
-            # Document 객체의 metadata에서 출처 정보 추출 (노트북 사이클 7 응용)
+            # [수정 전] if best_score > 1.2:
+            # [수정 후] 임계값을 1.5로 더 여유 있게 풀어줍니다.
+            if best_score > 1.5:
+                return "죄송합니다. 해당 질문은 디지털 헬스케어 FAQ 가이드에 포함되어 있지 않아 정확한 답변을 드릴 수 없습니다."
+
+            matched_docs = [doc for doc, score in docs_and_scores]
+            context_text = "\n\n".join([doc.page_content for doc in matched_docs])
             sources = [f"[{doc.metadata['category']}] {doc.metadata['id']}" for doc in matched_docs]
 
             # ---------------------------------------------------------
-            # 5. LLM 체인 실행 및 답변 생성 (Invoke)
+            # Step 5. LLM 답변 생성 (최종 렌더링)
             # ---------------------------------------------------------
+            # 💡 주의: 답변을 생성할 때는 재작성된 딱딱한 질문이 아니라, 사용자가 입력한 자연스러운 원본 질문(validated_q)을 사용합니다.
             response = self.faq_chain.invoke({
                 "context": context_text,   
                 "question": validated_q,   
                 "history": chat_history    
             })
 
-            # 최종 답변에 마크다운 형태로 출처를 덧붙여 반환 (노트북 사이클 9 참고)
             source_text = "\n\n**[참고 문서]**\n" + "\n".join([f"- {s}" for s in sources])
-            
             return response + source_text
         
-        # ---------------------------------------------------------
-        # 6. 예외 처리 (Exception Handling)
-        # ---------------------------------------------------------
-        # 위 과정 중(API 통신 에러 등) 예상치 못한 에러가 터지면 시스템 다운을 막고 여기로 빠집니다.
         except Exception as e:
-            # 개발자 확인용 로그 출력
             print(f"Error : {e}")
-            # 사용자에게 보여줄 안전한 범용 에러 메시지 반환
             return settings.ERROR_MESSAGE_SYSTEM

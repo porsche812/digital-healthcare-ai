@@ -1,7 +1,7 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser # AI의 응답 객체에서 텍스트만 추출하는 파서 임포트
 from config import settings # 앞서 작성한 API 키와 모델 설정값(settings.py) 가져오기
-from .prompts import FAQ_CHAT_PROMPT, CATEGORY_CLASSIFIER_PROMPT # 관리 중인 프롬프트 템플릿 가져오기
+from .prompts import FAQ_CHAT_PROMPT # 관리 중인 프롬프트 템플릿 가져오기
 
 def get_llm():
     """
@@ -27,14 +27,3 @@ def get_faq_chain():
     # 2. 모델에 던져서 연산한 뒤,
     # 3. 결과물에서 군더더기를 떼고 텍스트만 딱 뽑아내는 파이프라인입니다.
     return FAQ_CHAT_PROMPT | llm | output_parser
-
-def get_category_chain():
-    """
-    사용자 질문의 카테고리를 분류하기 위한 전용 체인을 조립합니다.
-    """
-    llm = get_llm() # 모델 인스턴스 생성
-    output_parser = StrOutputParser() # 파서 인스턴스 생성
-
-    # 카테고리 분류 전용 프롬프트를 사용하여 위와 동일한 구조로 체인을 만듭니다.
-    return CATEGORY_CLASSIFIER_PROMPT | llm | output_parser
-
