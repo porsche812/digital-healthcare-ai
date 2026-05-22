@@ -45,30 +45,40 @@ EMBEDDING_MODEL_NAME = "text-embedding-3-small"
 RETRIEVER_TOP_K = 2
 # FAISS L2 거리 임계값. 이 값보다 "먼"(=유사하지 않은) 결과는 도메인 밖(OOD)으로 보고 거부합니다.
 # 거리이므로 값이 작을수록 유사합니다. 임베딩 모델/데이터에 따라 튜닝이 필요합니다.
-RETRIEVER_SCORE_THRESHOLD = 1.5
+RETRIEVER_SCORE_THRESHOLD = float(os.getenv("RETRIEVER_SCORE_THRESHOLD", "0.8"))
 REWRITE_HISTORY_WINDOW = 4  # 질문 재작성 시 참고할 최근 메시지 수
 
 # ---------------------------------------------------------------------------
-# 4. 데이터 소스 설정
+# 4. 데이터 소스 설정 (AI Hub 실데이터 전용)
 # ---------------------------------------------------------------------------
-# 데이터 소스 선택: "aihub" | "sample"
-#   - aihub : AIHUB_DATA_DIR 의 JSON 을 적재 (없으면 자동으로 sample 폴백)
-#   - sample: 저장소에 내장된 데모용 소량 데이터 사용
-FAQ_DATA_SOURCE = os.getenv("FAQ_DATA_SOURCE", "aihub")
-
 # aihubshell 로 내려받아 압축 해제한 라벨링데이터(JSON) 들이 위치한 디렉토리.
-# 예) ./data/raw/aihub/  아래에 *.json 이 흩어져 있어도 재귀적으로 수집합니다.
+# 하위 폴더에 *.json 이 흩어져 있어도 재귀적으로 수집합니다.
 AIHUB_DATA_DIR = os.getenv("AIHUB_DATA_DIR", "./data/raw/aihub")
 
-# AI Hub 헬스케어 QA 데이터셋 식별자(다운로드 스크립트에서 사용). 예시 기본값일 뿐이며
-# 실제 사용 데이터셋의 dataSetSn 으로 교체하세요. (소개페이지 URL 의 dataSetSn 값)
-AIHUB_DATASET_KEY = os.getenv("AIHUB_DATASET_KEY", "")
+# 다운로드 스크립트에서 사용하는 데이터셋 식별자(dataSetSn).
+# 71762 = "초거대 AI 헬스케어 질의응답 데이터"
+AIHUB_DATASET_KEY = os.getenv("AIHUB_DATASET_KEY", "71762")
 
-# AI Hub JSON 의 스키마는 데이터셋/버전마다 다릅니다.
-# 아래 매핑은 "후보 키 목록"으로, 레코드에서 먼저 발견되는 키를 사용합니다.
-# 본인 데이터셋 스키마에 맞춰 키만 추가/수정하면 로더 코드를 건드릴 필요가 없습니다.
+# AI Hub 로더 형식 선택: "answer_files" | "flat"
+#   - answer_files : 71762 처럼 답변 파일(HC-A-*.json) 한 건이 한 레코드인 구조.
+#                    answer.intro/body/conclusion 을 합쳐 본문으로, department 를 진료과로 사용.
+#   - flat         : 한 JSON 안에 question/answer 가 평평하게 들어있는 일반 구조.
+AIHUB_LOADER_FORMAT = os.getenv("AIHUB_LOADER_FORMAT", "answer_files")
+
+# [비용 통제] 약 221만 건 전부 임베딩하면 비용/시간이 큽니다.
+#   - AIHUB_PER_CATEGORY_LIMIT : 진료과(department)별 최대 적재 건수 (0 = 무제한)
+#   - AIHUB_TOTAL_LIMIT        : 전체 최대 적재 건수 (0 = 무제한)
+AIHUB_PER_CATEGORY_LIMIT = int(os.getenv("AIHUB_PER_CATEGORY_LIMIT", "150"))
+AIHUB_TOTAL_LIMIT = int(os.getenv("AIHUB_TOTAL_LIMIT", "3000"))
+
+# [도메인 집중] 특정 진료과만 적재(부분 문자열 매칭). 예: "내과" → 내과/내분비내과/소화기내과 등.
+# 비우면 전체 진료과. 한 과로 좁히면 그 과의 질병 커버리지가 깊어져 답변 적중률이 올라갑니다.
+AIHUB_DEPARTMENT_FILTER = os.getenv("AIHUB_DEPARTMENT_FILTER", "") or None
+# 한 질병이 인덱스를 독식하지 않도록 질병별 최대 적재 수(다양성 확보). 0 = 무제한.
+AIHUB_PER_DISEASE_LIMIT = int(os.getenv("AIHUB_PER_DISEASE_LIMIT", "30"))
+
+# (flat 형식 전용) 스키마 후보 키 매핑. answer_files 형식에서는 사용하지 않습니다.
 AIHUB_FIELD_MAP = {
-    # 레코드 배열이 들어있는 상위 경로 후보 (점 표기 지원). None/빈값이면 최상위가 배열로 간주.
     "records_path": ["data", "documents", "qas", "annotations", "list"],
     "question_keys": ["question", "질문", "Q", "query", "title", "input"],
     "answer_keys": ["answer", "답변", "A", "response", "content", "output"],

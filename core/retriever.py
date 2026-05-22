@@ -1,11 +1,17 @@
 """
-FAISS 기반 검색기.
+FAISS 기반 검색기 (langchain-community 의존성 없음).
 
-기존 코드의 버그였던 "데이터가 바뀌어도 디스크의 옛 인덱스를 그대로 로드"하는 문제를
-data fingerprint(manifest) 비교로 해결합니다. 데이터 내용/개수가 바뀌면 자동 재빌드합니다.
+langchain-community 의 FAISS 래퍼는 구버전 langchain-core(<1.0)를 요구해서, 현재
+환경의 langchain-core 1.x 와 충돌합니다. 그래서 community 를 거치지 않고 faiss 를
+직접 사용합니다(IndexFlatL2). 문서 본문/메타데이터는 docstore.json 에 함께 저장합니다.
 
-또한 OpenAIEmbeddings 를 외부에서 주입할 수 있어(테스트 시 FakeEmbeddings 사용 가능)
-OpenAI 키 없이도 검색 파이프라인을 검증할 수 있습니다.
+- 데이터가 바뀌면 지문(fingerprint) 비교로 자동 재빌드합니다.
+- 임베딩을 외부에서 주입 가능(테스트 시 가짜 임베딩 사용) → OpenAI 키 없이 검증 가능.
+
+저장 구조 (VECTOR_STORE_PATH 디렉토리):
+  index.faiss          # faiss 인덱스
+  docstore.json        # [{page_content, metadata}, ...] (인덱스 순서와 1:1)
+  data_manifest.json   # {"fingerprint": ..., "count": ...}
 """
 from __future__ import annotations
 
@@ -13,13 +19,16 @@ import hashlib
 import json
 import os
 
-from langchain_community.vectorstores import FAISS
+import faiss
+import numpy as np
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 
 from config import settings
 
 _MANIFEST_NAME = "data_manifest.json"
+_INDEX_NAME = "index.faiss"
+_DOCSTORE_NAME = "docstore.json"
 
 
 def _fingerprint(faq_data: list[dict]) -> str:
@@ -42,55 +51,77 @@ def _build_embeddings() -> Embeddings:
 
 
 class FAQRetriever:
-    def __init__(self, faq_data: list[dict], embeddings: Embeddings | None = None):
+    def __init__(self, faq_data, embeddings=None):
         self.embeddings = embeddings or _build_embeddings()
         self.fingerprint = _fingerprint(faq_data)
-        self.vectorstore = self._load_or_build(faq_data)
+        self._index = None
+        self._docs = []
+        self._load_or_build(faq_data)
 
-    # -- index lifecycle ---------------------------------------------------
-    def _manifest_path(self) -> str:
-        return os.path.join(settings.VECTOR_STORE_PATH, _MANIFEST_NAME)
+    # -- paths -------------------------------------------------------------
+    def _p(self, name: str) -> str:
+        return os.path.join(settings.VECTOR_STORE_PATH, name)
 
     def _index_is_fresh(self) -> bool:
-        """디스크 인덱스가 존재하고, 저장 당시 데이터 지문이 현재와 같으면 True."""
-        if not os.path.exists(settings.VECTOR_STORE_PATH):
+        if not os.path.isdir(settings.VECTOR_STORE_PATH):
+            return False
+        if not (os.path.exists(self._p(_INDEX_NAME)) and os.path.exists(self._p(_DOCSTORE_NAME))):
             return False
         try:
-            with open(self._manifest_path(), "r", encoding="utf-8") as f:
-                saved = json.load(f).get("fingerprint")
-            return saved == self.fingerprint
+            with open(self._p(_MANIFEST_NAME), "r", encoding="utf-8") as f:
+                return json.load(f).get("fingerprint") == self.fingerprint
         except (OSError, json.JSONDecodeError):
             return False
 
-    def _load_or_build(self, faq_data: list[dict]) -> FAISS:
+    # -- lifecycle ---------------------------------------------------------
+    def _load_or_build(self, faq_data) -> None:
         if self._index_is_fresh():
-            print("📦 기존 FAISS 인덱스 로드 (데이터 변경 없음)")
-            return FAISS.load_local(
-                settings.VECTOR_STORE_PATH,
-                self.embeddings,
-                allow_dangerous_deserialization=True,  # 로컬 자체 생성 파일이므로 허용
-            )
+            print("기존 FAISS 인덱스 로드 (데이터 변경 없음)")
+            self._index = faiss.read_index(self._p(_INDEX_NAME))
+            with open(self._p(_DOCSTORE_NAME), "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            self._docs = [Document(page_content=d["page_content"], metadata=d["metadata"]) for d in raw]
+            return
 
-        print("🛠️  데이터 변경 감지 또는 인덱스 없음 → FAISS 인덱스 재빌드")
-        documents = [
+        print("데이터 변경 감지 또는 인덱스 없음 -> FAISS 인덱스 재빌드")
+        self._docs = [
             Document(
                 page_content=f"Q: {item['question']}\nA: {item['answer']}",
                 metadata={"id": item["id"], "category": item["category"]},
             )
             for item in faq_data
         ]
-        vectorstore = FAISS.from_documents(documents, self.embeddings)
-        vectorstore.save_local(settings.VECTOR_STORE_PATH)
-        with open(self._manifest_path(), "w", encoding="utf-8") as f:
+        texts = [d.page_content for d in self._docs]
+        vectors = np.array(self.embeddings.embed_documents(texts), dtype="float32")
+
+        index = faiss.IndexFlatL2(vectors.shape[1])
+        index.add(vectors)
+        self._index = index
+
+        os.makedirs(settings.VECTOR_STORE_PATH, exist_ok=True)
+        faiss.write_index(index, self._p(_INDEX_NAME))
+        with open(self._p(_DOCSTORE_NAME), "w", encoding="utf-8") as f:
+            json.dump(
+                [{"page_content": d.page_content, "metadata": d.metadata} for d in self._docs],
+                f, ensure_ascii=False,
+            )
+        with open(self._p(_MANIFEST_NAME), "w", encoding="utf-8") as f:
             json.dump({"fingerprint": self.fingerprint, "count": len(faq_data)}, f)
-        return vectorstore
 
     # -- search API --------------------------------------------------------
-    def search(self, query: str, top_k: int = settings.RETRIEVER_TOP_K) -> list[Document]:
-        return self.vectorstore.similarity_search(query, k=top_k)
-
-    def search_with_score(
-        self, query: str, top_k: int = settings.RETRIEVER_TOP_K
-    ) -> list[tuple[Document, float]]:
+    def search_with_score(self, query: str, top_k: int = settings.RETRIEVER_TOP_K):
         """(문서, L2거리) 튜플 리스트. 거리가 작을수록 유사합니다."""
-        return self.vectorstore.similarity_search_with_score(query, k=top_k)
+        if self._index is None or not self._docs:
+            return []
+        q = np.array([self.embeddings.embed_query(query)], dtype="float32")
+        k = min(top_k, len(self._docs))
+        distances, indices = self._index.search(q, k)
+        results = []
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx < 0:
+                continue
+            results.append((self._docs[idx], float(dist)))
+        return results
+
+    def search(self, query: str, top_k: int = settings.RETRIEVER_TOP_K):
+        return [doc for doc, _ in self.search_with_score(query, top_k)]
