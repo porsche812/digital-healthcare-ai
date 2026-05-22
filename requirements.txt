@@ -1,3 +1,4 @@
+# === 기존 의존성 ===
 aiofiles==24.1.0
 annotated-doc==0.0.4
 annotated-types==0.7.0
@@ -73,3 +74,10 @@ uuid_utils==0.14.1
 uvicorn==0.41.0
 xxhash==3.6.0
 zstandard==0.25.0
+
+# === [추가] FAISS 벡터스토어 구동에 필수 (기존 누락 → 실행 불가 버그 수정) ===
+langchain-community==0.3.27   # langchain_community.vectorstores.FAISS 제공
+faiss-cpu==1.9.0              # FAISS 실제 엔진(미설치 시 import 에러)
+
+# === [추가] 개발/테스트 ===
+pytest==8.3.4

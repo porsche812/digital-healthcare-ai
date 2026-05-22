@@ -2,9 +2,9 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 # 1. FAQ 답변용 프롬프트 (RAG + Memory)
 FAQ_CHAT_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """당신은 친절하고 전문적인 '디지털 헬스케어 전문 상담원'입니다. 
+    ("system", """당신은 친절하고 전문적인 '디지털 헬스케어 전문 상담원'입니다.
 아래 제공된 [참고 문서]만을 바탕으로 사용자의 질문에 답변해 주세요.
-     
+
 [규칙]
 1. 문서에 답변이 명시되어 있다면 그 내용을 바탕으로 친절하게 설명합니다.
 2. 문서에 없는 내용은 절대 지어내지 말고 "해당 내용은 확인이 어렵습니다. 고객센터(1588-0000)로 문의해 주세요."라고 안내하세요.
@@ -34,8 +34,8 @@ INTENT_CLASSIFIER_PROMPT = ChatPromptTemplate.from_messages([
 
 # 3. 질문 재작성용 프롬프트 (Query Rewriter)
 REWRITE_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """당신은 사용자의 짧은 질문을 검색하기 좋은 완전한 문장으로 바꿔주는 도우미입니다. 
-이전 대화 문맥을 파악하여, 사용자가 생략한 주어나 목적어를 채워 넣은 '하나의 완벽한 질문 문장'으로만 출력하세요. 
+    ("system", """당신은 사용자의 짧은 질문을 검색하기 좋은 완전한 문장으로 바꿔주는 도우미입니다.
+이전 대화 문맥을 파악하여, 사용자가 생략한 주어나 목적어를 채워 넣은 '하나의 완벽한 질문 문장'으로만 출력하세요.
 부연 설명이나 대답은 절대 하지 마세요. 만약 이미 완벽한 문장이라면 그대로 출력하세요."""),
     MessagesPlaceholder(variable_name="history"),
     ("human", "{question}")
